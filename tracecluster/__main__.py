@@ -8,8 +8,16 @@ from pathlib import Path
 from .core import group_tracebacks
 
 
+class SafeArgumentParser(argparse.ArgumentParser):
+    """Avoid echoing untrusted arguments in CLI errors."""
+
+    def error(self, message):
+        self.print_usage(sys.stderr)
+        self.exit(2, "tracecluster: invalid arguments\n")
+
+
 def main(argv=None):
-    parser = argparse.ArgumentParser(description='Group repeated Python tracebacks in a log.')
+    parser = SafeArgumentParser(description='Group repeated Python tracebacks in a log.')
     parser.add_argument('path', help='UTF-8 log file, or - for standard input')
     parser.add_argument('--json', action='store_true', help='Output JSON')
     parser.add_argument('--max-bytes', type=int, default=8_000_000, help='Maximum input size (default: 8000000)')
@@ -26,7 +34,6 @@ def main(argv=None):
             raise ValueError('input exceeds --max-bytes')
         groups = group_tracebacks(raw.decode('utf-8'))
     except (OSError, UnicodeError, ValueError) as exc:
-        # Do not echo paths or raw log content in diagnostics.
         if isinstance(exc, ValueError) and str(exc) == 'input exceeds --max-bytes':
             message = str(exc)
         elif isinstance(exc, UnicodeError):

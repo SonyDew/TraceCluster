@@ -4,15 +4,18 @@ import hashlib
 import re
 from collections import Counter
 
-START = re.compile(r"^Traceback \(most recent call last\):\s*$")
+START = re.compile(r"^Traceback \(most recent call last\):$")
 FRAME = re.compile(r'^\s*File "([^"]+)", line (\d+), in (.+?)\s*$')
-EXCEPTION = re.compile(r"^([\w.]+(?:Error|Exception|Warning|Exit|Interrupt|Group)|[\w.]+):(?:\s|$)")
-CHAIN = ("During handling of the above exception, another exception occurred:",
-         "The above exception was the direct cause of the following exception:")
+EXCEPTION = re.compile(r"^([A-Za-z_][\w.]*) (?::(?:\s|$))", re.X)
+BARE_EXCEPTIONS = frozenset({'KeyboardInterrupt', 'SystemExit', 'GeneratorExit'})
+CHAIN = frozenset({
+    'During handling of the above exception, another exception occurred:',
+    'The above exception was the direct cause of the following exception:',
+})
 
 
 def parse_tracebacks(text):
-    """Yield (exception type, frames) for complete conventional tracebacks."""
+    """Yield signatures from complete conventional traceback blocks."""
     lines = text.splitlines()
     index = 0
     while index < len(lines):
@@ -26,29 +29,45 @@ def parse_tracebacks(text):
             line = lines[index]
             if START.fullmatch(line):
                 break
-            frame = FRAME.match(line)
+            frame = FRAME.fullmatch(line)
             if frame:
                 path, _, func = frame.groups()
-                # Keep only the filename, not absolute paths or source line numbers.
                 frames.append((path.replace('\\', '/').rsplit('/', 1)[-1], func.strip()))
             elif line and not line[0].isspace():
                 match = EXCEPTION.match(line)
-                if match and line not in CHAIN:
+                if match:
                     exception_type = match.group(1)
-                elif line in CHAIN:
-                    exception_type = None
-                    frames = []
-                elif exception_type is not None:
+                    index += 1
                     break
-            elif not line and exception_type is not None:
+                if line in BARE_EXCEPTIONS:
+                    exception_type = line
+                    index += 1
+                    break
+                # A log boundary or malformed traceback is not an exception.
                 break
             index += 1
+
+        # Continuation lines and exception notes do not change the exception type.
+        # A standard chain marker suppresses the preceding traceback only when
+        # another traceback actually follows it.
         following = index
-        while following < len(lines) and not lines[following].strip():
+        while following < len(lines) and not START.fullmatch(lines[following]):
+            if lines[following] in CHAIN:
+                next_line = following + 1
+                while next_line < len(lines) and not lines[next_line].strip():
+                    next_line += 1
+                if next_line < len(lines) and START.fullmatch(lines[next_line]):
+                    exception_type = None
+                    index = next_line
+                break
+            if lines[following] and not lines[following][0].isspace():
+                # Unrelated log lines are not part of a traceback.
+                break
             following += 1
-        chained = following < len(lines) and lines[following] in CHAIN
-        if exception_type and frames and not chained:
+        if exception_type and frames:
             yield exception_type, tuple(frames)
+        if index <= following and index < len(lines) and not START.fullmatch(lines[index]):
+            index += 1
 
 
 def group_tracebacks(text):
