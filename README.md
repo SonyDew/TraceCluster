@@ -31,4 +31,4 @@ Exit status: `0` for successfully processed input (including no tracebacks), `2`
 
 ## Development report — morning
 
-On Linux with Python 3.13, 15 unit and CLI tests passed using `python -m unittest discover -s tests -q`. Windows and Python 3.10–3.12 have not been tested. The installed console script has not been separately tested.
+On Linux with Python 3.13, 15 unit and CLI tests passed using `python -m unittest discover -s tests -q`. Windows and Python 3.10–3.12 have not been tested. A wheel was built offline and installed in an isolated virtual environment; the installed console script was checked with a traceback piped through standard input.
