@@ -1,77 +1,85 @@
-"""Parse conventional Python tracebacks without executing log content."""
+"""Group conventional Python tracebacks without executing log content."""
 
 import hashlib
 import re
 from collections import Counter
 
-START = re.compile(r"^Traceback \(most recent call last\):$")
+START = 'Traceback (most recent call last):'
 FRAME = re.compile(r'^\s*File "([^"]+)", line (\d+), in (.+?)\s*$')
-EXCEPTION = re.compile(r"^([A-Za-z_][\w.]*) (?::(?:\s|$))", re.X)
-BARE_EXCEPTIONS = frozenset({'KeyboardInterrupt', 'SystemExit', 'GeneratorExit'})
+EXCEPTION = re.compile(r'^([A-Za-z_][\w.]*)\s*:(?:\s|$)')
+LOG_LEVELS = frozenset({'DEBUG', 'INFO', 'WARNING', 'WARN', 'ERROR', 'CRITICAL', 'TRACE'})
+BARE = frozenset({'KeyboardInterrupt', 'SystemExit', 'GeneratorExit'})
 CHAIN = frozenset({
     'During handling of the above exception, another exception occurred:',
     'The above exception was the direct cause of the following exception:',
 })
 
 
+def _next_start(lines, index):
+    while index < len(lines) and not lines[index].strip():
+        index += 1
+    return index if index < len(lines) and lines[index] == START else None
+
+
 def parse_tracebacks(text):
-    """Yield signatures from complete conventional traceback blocks."""
+    """Yield complete traceback signatures, keeping the final chained exception."""
     lines = text.splitlines()
     index = 0
     while index < len(lines):
-        if not START.fullmatch(lines[index]):
+        if lines[index] != START:
             index += 1
             continue
         index += 1
         frames = []
-        exception_type = None
+        exception = None
         while index < len(lines):
             line = lines[index]
-            if START.fullmatch(line):
+            if line == START:
                 break
-            frame = FRAME.fullmatch(line)
-            if frame:
-                path, _, func = frame.groups()
+            match = FRAME.fullmatch(line)
+            if match:
+                path, _, func = match.groups()
                 frames.append((path.replace('\\', '/').rsplit('/', 1)[-1], func.strip()))
-            elif line and not line[0].isspace():
+                index += 1
+                continue
+            if not line or line[0].isspace():
+                index += 1
+                continue
+            if frames:
                 match = EXCEPTION.match(line)
-                if match:
-                    exception_type = match.group(1)
+                if match and match.group(1) not in LOG_LEVELS:
+                    exception = match.group(1)
                     index += 1
-                    break
-                if line in BARE_EXCEPTIONS:
-                    exception_type = line
+                elif line in BARE:
+                    exception = line
                     index += 1
-                    break
-                # A log boundary or malformed traceback is not an exception.
-                break
-            index += 1
+            break
 
-        # Continuation lines and exception notes do not change the exception type.
-        # A standard chain marker suppresses the preceding traceback only when
-        # another traceback actually follows it.
-        following = index
-        while following < len(lines) and not START.fullmatch(lines[following]):
-            if lines[following] in CHAIN:
-                next_line = following + 1
-                while next_line < len(lines) and not lines[next_line].strip():
-                    next_line += 1
-                if next_line < len(lines) and START.fullmatch(lines[next_line]):
-                    exception_type = None
-                    index = next_line
-                break
-            if lines[following] and not lines[following][0].isspace():
-                # Unrelated log lines are not part of a traceback.
-                break
-            following += 1
-        if exception_type and frames:
-            yield exception_type, tuple(frames)
-        if index <= following and index < len(lines) and not START.fullmatch(lines[index]):
+        if exception and frames:
+            # A chain separator suppresses this signature only when another
+            # conventional traceback immediately follows it.
+            look = index
+            chained = False
+            while look < len(lines):
+                line = lines[look]
+                if line in CHAIN:
+                    following = _next_start(lines, look + 1)
+                    if following is not None:
+                        index = following
+                        chained = True
+                    break
+                if line == START or (line and not line[0].isspace()):
+                    break
+                look += 1
+            if chained:
+                continue
+            yield exception, tuple(frames)
+        if index < len(lines) and lines[index] != START:
             index += 1
 
 
 def group_tracebacks(text):
-    """Return stable groups ordered by frequency then fingerprint."""
+    """Return groups ordered by descending count and fingerprint."""
     counts = Counter(parse_tracebacks(text))
     groups = []
     for (exception, frames), count in counts.items():
